@@ -29,7 +29,7 @@ Yahoo.
 Build and run the updated containers:
 
 ```bash
-docker compose build tradingagents
+docker compose build tradingagents tradingagents-ollama
 docker compose --profile ollama up -d ollama
 docker compose exec ollama ollama pull qwen3:14b
 docker compose --profile ollama run --rm tradingagents-ollama
