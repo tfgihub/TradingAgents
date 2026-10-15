@@ -9,11 +9,17 @@ services:
     stdin_open: true
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.40.5@sha256:5d3a2f25f9825628daba94dc0b1d421c7d57d6c03ae5faa9ba050e058bab8241
+    gpus: all
     volumes:
       - ollama_data:/root/.ollama
     profiles:
       - ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   tradingagents-ollama:
     build: .
@@ -25,7 +31,8 @@ services:
     volumes:
       - ${TRADINGAGENTS_DATA_DIR:-tradingagents_data}:/home/appuser/.tradingagents
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     tty: true
     stdin_open: true
     profiles:
