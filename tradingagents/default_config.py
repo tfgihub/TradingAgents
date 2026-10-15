@@ -139,6 +139,8 @@ def build_default_config() -> dict:
         # Increase for longer lookback strategies or to broaden macro coverage;
         # decrease to reduce token usage in agent prompts.
         "news_article_limit": 20,             # max articles per ticker (ticker-news)
+        "news_body_max_chars": 3000,          # max Alpaca body excerpt per article
+        "news_body_total_max_chars": 12000,   # max full-body text across one ticker report
         "global_news_article_limit": 10,      # max articles for global/macro news
         "global_news_lookback_days": 7,       # macro news lookback window
         # Search queries used by get_global_news for macro headlines. Extend or
@@ -161,14 +163,14 @@ def build_default_config() -> dict:
             # Statements come from SEC EDGAR as filed (US filers), then Yahoo; the
         # overview and insider tools, which SEC EDGAR does not serve, from Yahoo.
         "fundamental_data": "sec_edgar,yfinance",  # Options: sec_edgar, alpha_vantage, yfinance
-            "news_data": "yfinance",             # Options: alpha_vantage, yfinance
+            # Ticker news merges Alpaca + Yahoo; the trailing Yahoo vendor keeps
+            # global news and insider data on their supported implementation.
+            "news_data": "alpaca_yahoo,yfinance",
             "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
         },
         # Tool-level configuration (takes precedence over category-level)
-        "tool_vendors": {
-            # Example: "get_stock_data": "alpha_vantage",  # Override category default
-        },
+        "tool_vendors": {},
         # Benchmark for alpha calculation in the reflection layer.
         # ``benchmark_ticker`` (when set) overrides the suffix map for all
         # tickers; leave it None to use ``benchmark_map`` for auto-detection

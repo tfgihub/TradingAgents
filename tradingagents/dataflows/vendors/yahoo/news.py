@@ -84,6 +84,38 @@ def _format_articles(articles: list[dict]) -> str:
     return out
 
 
+def fetch_news_articles_yfinance(
+    ticker: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Return normalized Yahoo ticker-news articles for a combined vendor."""
+
+    article_limit = get_config()["news_article_limit"]
+    canonical = normalize_symbol(ticker)
+    feed = yf_retry(lambda: yf.Ticker(canonical).get_news(count=article_limit)) or []
+    articles = [_extract_article_data(article) for article in feed]
+    if not feed:
+        found, answered = _search_news(canonical, article_limit)
+        if not answered or not found:
+            raise VendorUnavailableError(
+                f"Yahoo Finance has no news articles tagged {canonical}"
+            )
+        articles = [_extract_article_data(article) for article in found]
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    return [
+        {
+            **article,
+            "vendor": "Yahoo Finance",
+            "content": "",
+        }
+        for article in articles
+        if in_window(article["pub_date"], start_dt, end_dt)
+    ]
+
+
 def get_news_yfinance(
     ticker: str,
     start_date: str,
