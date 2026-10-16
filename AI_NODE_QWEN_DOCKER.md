@@ -44,8 +44,12 @@ nvidia-smi
 
 ## Private production runner
 
-The runner accepts one analysis at a time, persists job/progress state under
-the existing TradingAgents data volume, and exposes only an authenticated API.
+The runner queues analyses (first in, first out, up to 200 waiting) and runs
+them one at a time to protect the GPU. It persists job/progress state under
+the existing TradingAgents data volume and exposes only an authenticated API.
+A restart fails the analysis that was running; analyses still waiting resume.
+Progress is structured like the terminal UI: team/agent status, messages and
+tool calls, and each report as its stage finishes.
 Bind it to ai-node's Tailscale address, never its LAN address:
 
 ```bash

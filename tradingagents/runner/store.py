@@ -42,11 +42,12 @@ class JobStore:
                     ON events(job_id, sequence);
                 """
             )
+            # A job that was mid-run cannot resume; queued jobs stay queued.
             connection.execute(
                 """
                 UPDATE jobs
                 SET status = 'failed', updated_at = ?, error = ?
-                WHERE status IN ('queued', 'running')
+                WHERE status = 'running'
                 """,
                 (_now(), "runner restarted before the analysis completed"),
             )
@@ -56,12 +57,61 @@ class JobStore:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def has_active_job(self) -> bool:
+    def count_active(self) -> int:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM jobs WHERE status IN ('queued', 'running') LIMIT 1"
+                "SELECT count(*) FROM jobs WHERE status IN ('queued', 'running')"
             ).fetchone()
+        return int(row[0])
+
+    def has_queued(self) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("SELECT 1 FROM jobs WHERE status = 'queued' LIMIT 1").fetchone()
         return row is not None
+
+    def claim_next_queued(self) -> dict | None:
+        """Atomically move the oldest queued job to running and return it."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at, rowid LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ?",
+                (_now(), row["id"]),
+            )
+        return self.get_job(row["id"])
+
+    def cancel_queued(self, job_id: str) -> bool:
+        """Fail a job that has not started; a running job cannot be interrupted."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'failed', updated_at = ?, error = 'cancelled by operator'
+                WHERE id = ? AND status = 'queued'
+                """,
+                (_now(), job_id),
+            )
+        if cursor.rowcount == 0:
+            return False
+        self.add_event(job_id, "job.failed", {"error": "cancelled by operator"})
+        return True
+
+    def list_active(self) -> list[dict]:
+        """Queued and running jobs in start order, without their payloads."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, ticker, trade_date, status, created_at
+                FROM jobs
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at, rowid
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_job(self, ticker: str, trade_date: str, analysts: tuple[str, ...]) -> dict:
         job_id = str(uuid4())
@@ -131,7 +181,7 @@ class JobStore:
                 FROM events
                 WHERE job_id = ? AND sequence > ?
                 ORDER BY sequence
-                LIMIT 200
+                LIMIT 500
                 """,
                 (job_id, sequence),
             ).fetchall()

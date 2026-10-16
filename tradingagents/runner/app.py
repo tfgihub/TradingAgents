@@ -17,6 +17,7 @@ from tradingagents.runner.executor import execute_job
 from tradingagents.runner.store import JobStore
 
 _ANALYSTS = frozenset({"market", "social", "news", "fundamentals"})
+MAX_ACTIVE_JOBS = 200
 
 
 class _StrictModel(BaseModel):
@@ -87,9 +88,21 @@ def create_app(
                 detail="invalid runner API token",
             )
 
-    def run(job_id: str) -> None:
-        with execution_lock:
-            execute_job(job_store, job_id, reports)
+    def drain_queue() -> None:
+        """Run queued jobs one at a time, oldest first, until none remain."""
+        while True:
+            if not execution_lock.acquire(blocking=False):
+                return  # the active drain loop will pick up newly queued jobs
+            try:
+                while (job := job_store.claim_next_queued()) is not None:
+                    execute_job(job_store, job["id"], reports)
+            finally:
+                execution_lock.release()
+            if not job_store.has_queued():
+                return
+
+    if job_store.has_queued():
+        threading.Thread(target=drain_queue, name="runner-queue", daemon=True).start()
 
     @app.get("/health/live")
     def health_live() -> dict:
@@ -101,11 +114,23 @@ def create_app(
 
     @app.post("/v1/jobs", status_code=202, dependencies=[Depends(authorize)])
     def create_job(body: CreateJobRequest, background: BackgroundTasks) -> dict:
-        if job_store.has_active_job():
-            raise HTTPException(status_code=409, detail="an analysis is already queued or running")
+        if job_store.count_active() >= MAX_ACTIVE_JOBS:
+            raise HTTPException(status_code=429, detail="the analysis queue is full")
         job = job_store.create_job(body.ticker, body.trade_date, body.analysts)
-        background.add_task(run, job["id"])
+        background.add_task(drain_queue)
         return job
+
+    @app.get("/v1/jobs", dependencies=[Depends(authorize)])
+    def list_active_jobs() -> dict:
+        return {"jobs": job_store.list_active()}
+
+    @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(authorize)])
+    def cancel_job(job_id: str) -> dict:
+        if job_store.get_job(job_id) is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if not job_store.cancel_queued(job_id):
+            raise HTTPException(status_code=409, detail="only queued jobs can be cancelled")
+        return {"cancelled": True}
 
     @app.get("/v1/jobs/{job_id}", dependencies=[Depends(authorize)])
     def get_job(job_id: str) -> dict:
