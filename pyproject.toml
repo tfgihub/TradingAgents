@@ -22,6 +22,8 @@ dependencies = [
     "questionary>=2.1.0",
     "requests>=2.32.4",
     "rich>=14.0.0",
+    "fastapi>=0.118,<0.143",
+    "uvicorn[standard]>=0.34,<1",
     "typer>=0.21.0",
     "stockstats>=0.6.5",
     "typing-extensions>=4.14.0",
@@ -42,6 +44,7 @@ bedrock = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-runner = "tradingagents.runner.app:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "tradingagents.__version__"}

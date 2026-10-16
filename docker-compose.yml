@@ -15,6 +15,7 @@ services:
       - ollama_data:/root/.ollama
     profiles:
       - ollama
+      - runner
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -38,6 +39,32 @@ services:
     profiles:
       - ollama
 
+  tradingagents-runner:
+    build: .
+    entrypoint: ["tradingagents-runner"]
+    env_file:
+      - .env
+    environment:
+      - TRADINGAGENTS_LLM_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - TRADINGAGENTS_RUNNER_TOKEN_FILE=/run/secrets/runner_api_token
+    secrets:
+      - runner_api_token
+    volumes:
+      - ${TRADINGAGENTS_DATA_DIR:-tradingagents_data}:/home/appuser/.tradingagents
+    ports:
+      - "${TRADINGAGENTS_RUNNER_BIND_IP:-127.0.0.1}:8000:8000"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - runner
+
 volumes:
   tradingagents_data:
   ollama_data:
+
+secrets:
+  runner_api_token:
+    file: ${TRADINGAGENTS_RUNNER_TOKEN_FILE:-./runner_api_token.txt}

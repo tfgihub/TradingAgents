@@ -41,3 +41,46 @@ Verify GPU-backed inference with:
 docker compose exec ollama ollama ps
 nvidia-smi
 ```
+
+## Private production runner
+
+The runner accepts one analysis at a time, persists job/progress state under
+the existing TradingAgents data volume, and exposes only an authenticated API.
+Bind it to ai-node's Tailscale address, never its LAN address:
+
+```bash
+cd ~/TradingAgents
+openssl rand -hex 32 > runner_api_token.txt
+chmod 600 runner_api_token.txt
+
+tailscale ip -4
+nano .env
+```
+
+Set the printed Tailscale address in `.env`:
+
+```dotenv
+TRADINGAGENTS_RUNNER_BIND_IP=100.x.y.z
+TRADINGAGENTS_RUNNER_TOKEN_FILE=./runner_api_token.txt
+```
+
+Start the runner and its existing Ollama dependency:
+
+```bash
+docker compose --profile runner build tradingagents-runner
+docker compose --profile runner up -d ollama tradingagents-runner
+curl "http://$(tailscale ip -4):8000/health/ready"
+```
+
+Allow TCP 8000 only from thinkpad-prod's Tailscale IP, with the Tailscale ACL
+providing an independent second boundary:
+
+```bash
+sudo ufw allow in on tailscale0 from <THINKPAD_PROD_TAILSCALE_IP> \
+  to any port 8000 proto tcp comment 'TradingAgents runner from prod only'
+```
+
+Copy `runner_api_token.txt` to thinkpad-prod as
+`/opt/trading/secrets/tradingagents_runner_token.txt` without printing its
+contents. The production UI holds this token server-side; browsers never
+receive it.
