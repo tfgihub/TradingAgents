@@ -29,7 +29,8 @@ class JobStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     result_json TEXT,
-                    error TEXT
+                    error TEXT,
+                    mode TEXT NOT NULL DEFAULT 'live'
                 );
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +43,9 @@ class JobStore:
                     ON events(job_id, sequence);
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+            if "mode" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'")
             # A job that was mid-run cannot resume; queued jobs stay queued.
             connection.execute(
                 """
@@ -74,7 +78,10 @@ class JobStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at, rowid LIMIT 1"
+                """
+                SELECT id FROM jobs WHERE status = 'queued'
+                ORDER BY (mode = 'backtest'), created_at, rowid LIMIT 1
+                """
             ).fetchone()
             if row is None:
                 return None
@@ -105,7 +112,7 @@ class JobStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, ticker, trade_date, status, created_at
+                SELECT id, ticker, trade_date, status, created_at, mode
                 FROM jobs
                 WHERE status IN ('queued', 'running')
                 ORDER BY created_at, rowid
@@ -113,17 +120,19 @@ class JobStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def create_job(self, ticker: str, trade_date: str, analysts: tuple[str, ...]) -> dict:
+    def create_job(
+        self, ticker: str, trade_date: str, analysts: tuple[str, ...], mode: str = "live"
+    ) -> dict:
         job_id = str(uuid4())
         timestamp = _now()
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO jobs (
-                    id, ticker, trade_date, analysts_json, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                    id, ticker, trade_date, analysts_json, status, created_at, updated_at, mode
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
                 """,
-                (job_id, ticker, trade_date, json.dumps(analysts), timestamp, timestamp),
+                (job_id, ticker, trade_date, json.dumps(analysts), timestamp, timestamp, mode),
             )
         self.add_event(job_id, "job.queued", {"ticker": ticker, "trade_date": trade_date})
         return self.get_job(job_id)

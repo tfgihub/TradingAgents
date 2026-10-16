@@ -7,6 +7,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -28,6 +29,7 @@ class CreateJobRequest(_StrictModel):
     ticker: str = Field(min_length=1, max_length=24)
     trade_date: str
     analysts: tuple[str, ...] = ("market", "social", "news", "fundamentals")
+    mode: Literal["live", "backtest"] = "live"
 
     @field_validator("ticker")
     @classmethod
@@ -116,7 +118,7 @@ def create_app(
     def create_job(body: CreateJobRequest, background: BackgroundTasks) -> dict:
         if job_store.count_active() >= MAX_ACTIVE_JOBS:
             raise HTTPException(status_code=429, detail="the analysis queue is full")
-        job = job_store.create_job(body.ticker, body.trade_date, body.analysts)
+        job = job_store.create_job(body.ticker, body.trade_date, body.analysts, body.mode)
         background.add_task(drain_queue)
         return job
 

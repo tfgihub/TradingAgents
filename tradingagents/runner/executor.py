@@ -37,6 +37,11 @@ def execute_job(store: JobStore, job_id: str, results_root: Path) -> None:
     try:
         config = deepcopy(DEFAULT_CONFIG)
         config["checkpoint_enabled"] = False
+        if job.get("mode") == "backtest":
+            # A historical replay must not learn from, or write into, the live decision memory.
+            memory_path = results_root / job_id / "memory" / "trading_memory.md"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+            config["memory_log_path"] = str(memory_path)
         graph = TradingAgentsGraph(job["analysts"], config=config, debug=False)
         initial_state = graph.create_run_state(job["ticker"], job["trade_date"])
         args = graph.propagator.get_graph_args()

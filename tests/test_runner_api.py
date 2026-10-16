@@ -129,3 +129,48 @@ def test_store_fails_interrupted_running_job_but_keeps_queued_jobs(tmp_path):
     assert reopened.get_job(queued["id"])["status"] == "queued"
     assert reopened.claim_next_queued()["id"] == queued["id"]
     assert reopened.claim_next_queued() is None
+
+
+@pytest.mark.unit
+def test_live_jobs_run_before_older_backtest_jobs(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    backtest = store.create_job("AAPL", "2026-10-14", ("news",), mode="backtest")
+    live = store.create_job("MSFT", "2026-10-15", ("news",))
+    later_backtest = store.create_job("NVDA", "2026-10-14", ("news",), mode="backtest")
+
+    order = [store.claim_next_queued()["id"] for _ in range(3)]
+
+    assert order == [live["id"], backtest["id"], later_backtest["id"]]
+    assert store.get_job(live["id"])["mode"] == "live"
+
+
+@pytest.mark.unit
+def test_store_adds_mode_to_a_database_created_before_backtests(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "jobs.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, ticker TEXT NOT NULL, trade_date TEXT NOT NULL,"
+            " analysts_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL, result_json TEXT, error TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,"
+            " created_at TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES ('old', 'AAPL', '2026-10-01', '[]', 'completed', 'x', 'x', NULL, NULL)"
+        )
+
+    store = JobStore(path)
+
+    assert store.get_job("old")["mode"] == "live"
+    assert store.create_job("MSFT", "2026-10-02", ("news",), mode="backtest")["mode"] == "backtest"
+
+
+@pytest.mark.unit
+def test_runner_accepts_only_known_modes(client):
+    payload = {"ticker": "AAPL", "trade_date": "2026-10-15"}
+    assert client.post("/v1/jobs", headers=AUTH, json={**payload, "mode": "backtest"}).status_code == 202
+    assert client.post("/v1/jobs", headers=AUTH, json={**payload, "mode": "other"}).status_code == 422
