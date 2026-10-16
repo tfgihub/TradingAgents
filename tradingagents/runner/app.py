@@ -8,6 +8,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -19,6 +20,9 @@ from tradingagents.runner.store import JobStore
 
 _ANALYSTS = frozenset({"market", "social", "news", "fundamentals"})
 MAX_ACTIVE_JOBS = 200
+MAX_BATCH_JOBS = 2000
+MAX_BATCH_TICKERS = 120
+MAX_BATCH_DATES = 90
 
 
 class _StrictModel(BaseModel):
@@ -48,6 +52,43 @@ class CreateJobRequest(_StrictModel):
         if not valid or value > get_current_date():
             raise ValueError("trade_date must be YYYY-MM-DD and cannot be in the future")
         return value
+
+    @field_validator("analysts")
+    @classmethod
+    def validate_analysts(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or len(value) != len(set(value)) or not set(value) <= _ANALYSTS:
+            raise ValueError("analysts must be a non-empty unique subset of the supported analysts")
+        return value
+
+
+def _valid_date(value: str) -> str:
+    try:
+        valid = datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") == value
+    except ValueError:
+        valid = False
+    if not valid or value > get_current_date():
+        raise ValueError("trade dates must be YYYY-MM-DD and cannot be in the future")
+    return value
+
+
+class CreateBatchRequest(_StrictModel):
+    batch_id: UUID
+    tickers: list[str] = Field(min_length=1, max_length=MAX_BATCH_TICKERS)
+    trade_dates: list[str] = Field(min_length=1, max_length=MAX_BATCH_DATES)
+    analysts: tuple[str, ...] = ("market", "social", "news", "fundamentals")
+
+    @field_validator("tickers")
+    @classmethod
+    def validate_tickers(cls, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(item.strip().upper() for item in value))
+        for ticker in normalized:
+            safe_ticker_component(ticker)
+        return normalized
+
+    @field_validator("trade_dates")
+    @classmethod
+    def validate_dates(cls, value: list[str]) -> list[str]:
+        return sorted(dict.fromkeys(_valid_date(item) for item in value))
 
     @field_validator("analysts")
     @classmethod
@@ -121,6 +162,44 @@ def create_app(
         job = job_store.create_job(body.ticker, body.trade_date, body.analysts, body.mode)
         background.add_task(drain_queue)
         return job
+
+    @app.post("/v1/batches", status_code=202, dependencies=[Depends(authorize)])
+    def create_batch(body: CreateBatchRequest, background: BackgroundTasks) -> dict:
+        existing = job_store.batch_status(str(body.batch_id))
+        if existing is not None:
+            return existing
+        if len(body.tickers) * len(body.trade_dates) > MAX_BATCH_JOBS:
+            raise HTTPException(
+                status_code=422, detail=f"a batch may contain at most {MAX_BATCH_JOBS} analyses"
+            )
+        batch = job_store.create_batch(
+            str(body.batch_id), body.tickers, body.trade_dates, body.analysts
+        )
+        background.add_task(drain_queue)
+        return batch
+
+    @app.get("/v1/batches/{batch_id}", dependencies=[Depends(authorize)])
+    def get_batch(batch_id: str) -> dict:
+        batch = job_store.batch_status(batch_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        return batch
+
+    @app.get("/v1/batches/{batch_id}/results", dependencies=[Depends(authorize)])
+    def get_batch_results(batch_id: str, after: int = 0, limit: int = 200) -> dict:
+        """The recommendation dataset: finished analyses after a cursor, oldest first."""
+        batch = job_store.batch_status(batch_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        if after < 0 or not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="invalid cursor or limit")
+        return {"batch": batch, "results": job_store.batch_results_after(batch_id, after, limit)}
+
+    @app.post("/v1/batches/{batch_id}/cancel", dependencies=[Depends(authorize)])
+    def cancel_batch(batch_id: str) -> dict:
+        if job_store.batch_status(batch_id) is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        return {"cancelled": job_store.cancel_batch(batch_id)}
 
     @app.get("/v1/jobs", dependencies=[Depends(authorize)])
     def list_active_jobs() -> dict:

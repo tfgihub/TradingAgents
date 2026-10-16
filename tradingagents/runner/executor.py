@@ -73,6 +73,7 @@ def execute_job(store: JobStore, job_id: str, results_root: Path) -> None:
             "sections": build_sections(final_state),
         }
         store.set_status(job_id, "completed", result=result)
+        store.record_batch_result(job_id)
         store.add_event(
             job_id,
             "job.completed",
@@ -83,4 +84,5 @@ def execute_job(store: JobStore, job_id: str, results_root: Path) -> None:
         if tracker is not None:
             _emit(store, job_id, tracker.fail())
         store.set_status(job_id, "failed", error=message)
+        store.record_batch_result(job_id)
         store.add_event(job_id, "job.failed", {"error": message})

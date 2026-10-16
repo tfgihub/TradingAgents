@@ -174,3 +174,121 @@ def test_runner_accepts_only_known_modes(client):
     payload = {"ticker": "AAPL", "trade_date": "2026-10-15"}
     assert client.post("/v1/jobs", headers=AUTH, json={**payload, "mode": "backtest"}).status_code == 202
     assert client.post("/v1/jobs", headers=AUTH, json={**payload, "mode": "other"}).status_code == 422
+
+
+BATCH = {
+    "batch_id": "11111111-1111-1111-1111-111111111111",
+    "tickers": ["aapl", "msft"],
+    "trade_dates": ["2026-10-14", "2026-10-13", "2026-10-14"],
+}
+
+
+@pytest.mark.unit
+def test_batch_queues_every_pair_oldest_date_first_and_is_idempotent(tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        runner_app,
+        "execute_job",
+        lambda store, job_id, root: order.append(
+            (store.get_job(job_id)["trade_date"], store.get_job(job_id)["ticker"])
+        ),
+    )
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    client = TestClient(
+        runner_app.create_app(store=store, token=TOKEN, results_root=tmp_path / "reports")
+    )
+
+    first = client.post("/v1/batches", headers=AUTH, json=BATCH)
+    again = client.post("/v1/batches", headers=AUTH, json=BATCH)
+
+    assert first.status_code == 202 and first.json()["total"] == 4
+    assert again.json()["total"] == 4
+    assert order == [
+        ("2026-10-13", "AAPL"),
+        ("2026-10-13", "MSFT"),
+        ("2026-10-14", "AAPL"),
+        ("2026-10-14", "MSFT"),
+    ]
+
+
+@pytest.mark.unit
+def test_batch_jobs_stay_out_of_the_live_listing_and_queue_cap(client):
+    client.post("/v1/batches", headers=AUTH, json=BATCH)
+    assert client.get("/v1/jobs", headers=AUTH).json() == {"jobs": []}
+
+
+@pytest.mark.unit
+def test_batch_results_are_published_with_a_cursor(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.create_batch("b1", ["AAPL", "MSFT"], ["2026-10-14"], ("news",))
+    first = store.claim_next_queued()
+    second = store.claim_next_queued()
+    store.set_status(
+        first["id"],
+        "completed",
+        result={"rating": "Buy", "reports": {"final_trade_decision": "Rating: Buy " + "x" * 900}},
+    )
+    store.record_batch_result(first["id"])
+    store.set_status(second["id"], "failed", error="boom")
+    store.record_batch_result(second["id"])
+    store.record_batch_result(second["id"])  # publishing twice must not duplicate
+
+    results = store.batch_results_after("b1", 0)
+
+    assert [(r["ticker"], r["status"], r["rating"]) for r in results] == [
+        ("AAPL", "completed", "Buy"),
+        ("MSFT", "failed", None),
+    ]
+    assert len(results[0]["summary"]) == 600 and results[1]["error"] == "boom"
+    assert store.batch_results_after("b1", results[0]["seq"]) == [results[1]]
+    assert store.batch_status("b1")["completed"] == 1 and store.batch_status("b1")["failed"] == 1
+
+
+@pytest.mark.unit
+def test_restart_requeues_an_interrupted_batch_job_but_gives_up_after_retries(tmp_path):
+    path = tmp_path / "jobs.sqlite3"
+    store = JobStore(path)
+    store.create_batch("b1", ["AAPL"], ["2026-10-14"], ("news",))
+    job = store.claim_next_queued()
+
+    for _ in range(2):  # two restarts mid-run: retried each time
+        store = JobStore(path)
+        assert store.get_job(job["id"])["status"] == "queued"
+        store.claim_next_queued()
+
+    store = JobStore(path)  # the third interruption fails the job and publishes the failure
+    assert store.get_job(job["id"])["status"] == "failed"
+    assert store.batch_results_after("b1", 0)[0]["status"] == "failed"
+
+
+@pytest.mark.unit
+def test_batch_cancel_only_drops_jobs_that_have_not_started(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.create_batch("b1", ["AAPL", "MSFT", "NVDA"], ["2026-10-14"], ("news",))
+    started = store.claim_next_queued()
+
+    assert store.cancel_batch("b1") == 2
+    assert store.get_job(started["id"])["status"] == "running"
+    assert store.batch_status("b1")["failed"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"trade_dates": ["2999-01-01"]},
+        {"tickers": ["../AAPL"]},
+        {"tickers": []},
+        {"batch_id": "not-a-uuid"},
+        {"analysts": []},
+    ],
+)
+def test_batch_rejects_invalid_requests(client, patch):
+    assert client.post("/v1/batches", headers=AUTH, json={**BATCH, **patch}).status_code == 422
+
+
+@pytest.mark.unit
+def test_batch_endpoints_require_authentication_and_report_unknown_batches(client):
+    assert client.post("/v1/batches", json=BATCH).status_code == 401
+    assert client.get("/v1/batches/nope/results", headers=AUTH).status_code == 404
+    assert client.post("/v1/batches/nope/cancel", headers=AUTH).status_code == 404
