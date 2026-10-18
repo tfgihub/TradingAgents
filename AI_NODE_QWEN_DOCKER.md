@@ -71,7 +71,14 @@ Set the printed Tailscale address in `.env`:
 ```dotenv
 TRADINGAGENTS_RUNNER_BIND_IP=100.x.y.z
 TRADINGAGENTS_RUNNER_TOKEN_FILE=./runner_api_token.txt
+THINKPAD_PROD_IP=100.x.y.z
 ```
+
+Set `THINKPAD_PROD_IP` to thinkpad-prod's Tailscale address, not ai-node's.
+The runner maps the production MagicDNS name to this address because Docker's
+embedded DNS may not resolve tailnet-only names. It reuses its runner API token
+to authenticate to production's OpenBB gateway; the internal OpenBB token
+never leaves production.
 
 Start the runner and its existing Ollama dependency:
 
@@ -93,3 +100,7 @@ Copy `runner_api_token.txt` to thinkpad-prod as
 `/opt/trading/secrets/tradingagents_runner_token.txt` without printing its
 contents. The production UI holds this token server-side; browsers never
 receive it.
+
+Ticker-news tools query production OpenBB first. Alpaca and Yahoo remain
+ordered fallbacks when OpenBB is unavailable or has no coverage for an older
+analysis date.

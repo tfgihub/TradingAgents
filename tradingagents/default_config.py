@@ -163,9 +163,10 @@ def build_default_config() -> dict:
             # Statements come from SEC EDGAR as filed (US filers), then Yahoo; the
         # overview and insider tools, which SEC EDGAR does not serve, from Yahoo.
         "fundamental_data": "sec_edgar,yfinance",  # Options: sec_edgar, alpha_vantage, yfinance
-            # Ticker news merges Alpaca + Yahoo; the trailing Yahoo vendor keeps
-            # global news and insider data on their supported implementation.
-            "news_data": "alpaca_yahoo,yfinance",
+            # Ticker news comes from the private production OpenBB gateway first.
+            # Alpaca/Yahoo remain explicit fallbacks for outages or historical
+            # dates outside OpenBB's retained coverage.
+            "news_data": "openbb,alpaca_yahoo,yfinance",
             "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
         },
