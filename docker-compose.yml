@@ -48,12 +48,16 @@ services:
       - TRADINGAGENTS_LLM_PROVIDER=ollama
       - OLLAMA_BASE_URL=http://ollama:11434/v1
       - TRADINGAGENTS_RUNNER_TOKEN_FILE=/run/secrets/runner_api_token
+      - OPENBB_RESEARCH_URL=https://thinkpad-prod.tailaf054d.ts.net/api/research
+      - OPENBB_RESEARCH_TOKEN_FILE=/run/secrets/runner_api_token
     secrets:
       - runner_api_token
     volumes:
       - ${TRADINGAGENTS_DATA_DIR:-tradingagents_data}:/home/appuser/.tradingagents
     ports:
       - "${TRADINGAGENTS_RUNNER_BIND_IP:-127.0.0.1}:8000:8000"
+    extra_hosts:
+      - "thinkpad-prod.tailaf054d.ts.net:${THINKPAD_PROD_IP:?THINKPAD_PROD_IP is required for the runner}"
     depends_on:
       ollama:
         condition: service_healthy
