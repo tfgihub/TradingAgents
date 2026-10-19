@@ -2,62 +2,23 @@
 
 from __future__ import annotations
 
-import os
 from datetime import date
-from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import requests
 
 from tradingagents.dataflows.config import get_config
-from tradingagents.dataflows.errors import (
-    NoMarketDataError,
-    VendorNotConfiguredError,
-    VendorUnavailableError,
-)
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
+from tradingagents.dataflows.vendors.prod_gateway import gateway_settings, window_days
 
 REQUEST_TIMEOUT_SECONDS = 30
 
 
-def _settings() -> tuple[str, str]:
-    base_url = os.getenv("OPENBB_RESEARCH_URL", "").rstrip("/")
-    parsed = urlsplit(base_url)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise VendorNotConfiguredError(
-            "OPENBB_RESEARCH_URL must be a private HTTPS endpoint"
-        )
-    token_path = os.getenv("OPENBB_RESEARCH_TOKEN_FILE", "")
-    if not token_path:
-        raise VendorNotConfiguredError("OPENBB_RESEARCH_TOKEN_FILE is required")
-    try:
-        token = Path(token_path).read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise VendorNotConfiguredError(
-            f"OPENBB_RESEARCH_TOKEN_FILE could not be read: {exc}"
-        ) from exc
-    if len(token) < 32:
-        raise VendorNotConfiguredError(
-            "OPENBB_RESEARCH_TOKEN_FILE must contain at least 32 characters"
-        )
-    return base_url, token
+_settings = gateway_settings
 
 
 def _window_days(start_date: str, end_date: str) -> int:
-    try:
-        start = date.fromisoformat(start_date)
-        end = date.fromisoformat(end_date)
-    except ValueError as exc:
-        raise VendorUnavailableError("OpenBB received an invalid analysis date") from exc
-    if start > end:
-        raise VendorUnavailableError("OpenBB news start date is after its end date")
-    return max(1, min(365, (end - start).days + 1))
+    return window_days(start_date, end_date)
 
 
 def get_news(ticker: str, start_date: str, end_date: str) -> str:
