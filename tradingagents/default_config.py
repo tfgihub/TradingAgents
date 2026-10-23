@@ -167,7 +167,9 @@ def build_default_config() -> dict:
             # Alpaca/Yahoo remain explicit fallbacks for outages or historical
             # dates outside OpenBB's retained coverage.
             "news_data": "openbb,alpaca_yahoo,yfinance",
-            "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
+            # Production serves the rates, yields, CPI and jobs from keyless public sources; FRED
+            # (needs FRED_API_KEY) covers the rest when a key is set.
+            "macro_data": "prod_macro,fred",     # Options: prod_macro, fred
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
         },
         # Tool-level configuration (takes precedence over category-level)
