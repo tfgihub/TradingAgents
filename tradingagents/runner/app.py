@@ -201,6 +201,12 @@ def create_app(
             raise HTTPException(status_code=404, detail="batch not found")
         return {"cancelled": job_store.cancel_batch(batch_id)}
 
+    @app.get("/v1/activity", dependencies=[Depends(authorize)])
+    def activity() -> dict:
+        """Whether any analysis is queued or running; the ai-node sleeps only when none is."""
+        busy = job_store.count_busy()
+        return {"busy": busy > 0, "jobs": busy}
+
     @app.get("/v1/jobs", dependencies=[Depends(authorize)])
     def list_active_jobs() -> dict:
         return {"jobs": job_store.list_active()}

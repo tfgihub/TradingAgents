@@ -105,6 +105,14 @@ class JobStore:
             ).fetchone()
         return int(row[0])
 
+    def count_busy(self) -> int:
+        """Queued and running jobs of every mode, including a backtest batch's."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT count(*) FROM jobs WHERE status IN ('queued', 'running')"
+            ).fetchone()
+        return int(row[0])
+
     def has_queued(self) -> bool:
         with self._connect() as connection:
             row = connection.execute("SELECT 1 FROM jobs WHERE status = 'queued' LIMIT 1").fetchone()
