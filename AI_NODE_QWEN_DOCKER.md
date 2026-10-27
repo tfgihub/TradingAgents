@@ -105,6 +105,9 @@ Copy `runner_api_token.txt` to thinkpad-prod as
 contents. The production UI holds this token server-side; browsers never
 receive it.
 
-Ticker-news tools query production OpenBB first. Alpaca (via production) and
-Yahoo remain ordered fallbacks when OpenBB is unavailable or has no coverage for an older
-analysis date.
+Ticker-news tools (`merged_news`) list the Alpaca and Yahoo articles first, then up to
+`news_supplement_article_limit` (10) OpenBB articles from production's Nasdaq feed. The feeds
+barely overlap (OpenBB: Motley Fool, Zacks, Barchart; Alpaca: Benzinga, fiscal.ai), so OpenBB
+adds coverage and never displaces the others. Any one feed failing leaves the rest. The OpenBB
+gateway cuts its newest 50 articles to the window, so for an older date of a heavily covered
+stock it may add none. Set `data_vendors.news_data` to `alpaca_yahoo,yfinance` to leave OpenBB out.

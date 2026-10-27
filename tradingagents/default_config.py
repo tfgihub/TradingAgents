@@ -138,7 +138,8 @@ def build_default_config() -> dict:
         # News / data fetching parameters
         # Increase for longer lookback strategies or to broaden macro coverage;
         # decrease to reduce token usage in agent prompts.
-        "news_article_limit": 20,             # max articles per ticker (ticker-news)
+        "news_article_limit": 20,             # max Alpaca/Yahoo articles per ticker (ticker-news)
+        "news_supplement_article_limit": 10,  # extra OpenBB articles, listed after those
         "news_body_max_chars": 3000,          # max Alpaca body excerpt per article
         "news_body_total_max_chars": 12000,   # max full-body text across one ticker report
         "global_news_article_limit": 10,      # max articles for global/macro news
@@ -163,10 +164,10 @@ def build_default_config() -> dict:
             # Statements come from SEC EDGAR as filed (US filers), then Yahoo; the
         # overview and insider tools, which SEC EDGAR does not serve, from Yahoo.
         "fundamental_data": "sec_edgar,yfinance",  # Options: sec_edgar, alpha_vantage, yfinance
-            # Ticker news comes from the private production OpenBB gateway first.
-            # Alpaca/Yahoo remain explicit fallbacks for outages or historical
-            # dates outside OpenBB's retained coverage.
-            "news_data": "openbb,alpaca_yahoo,yfinance",
+            # Ticker news merges Alpaca and Yahoo with the private production OpenBB
+            # gateway's articles (the feeds do not overlap); Alpaca/Yahoo alone and
+            # then yfinance remain explicit fallbacks.
+            "news_data": "merged_news,alpaca_yahoo,yfinance",
             "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
         },

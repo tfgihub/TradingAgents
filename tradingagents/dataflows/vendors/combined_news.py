@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import VendorError, VendorUnavailableError
 from tradingagents.dataflows.vendors.alpaca import fetch_news_articles as fetch_alpaca
+from tradingagents.dataflows.vendors.openbb_news import fetch_news_articles as fetch_openbb
 from tradingagents.dataflows.vendors.yahoo.news import (
     fetch_news_articles_yfinance as fetch_yahoo,
 )
@@ -68,12 +69,19 @@ def _deduplicate(articles: list[dict]) -> list[dict]:
     return unique
 
 
-def _format_articles(ticker: str, start_date: str, end_date: str, articles: list[dict]) -> str:
+def _format_articles(
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    articles: list[dict],
+    limit: int | None = None,
+) -> str:
     config = get_config()
+    limit = config["news_article_limit"] if limit is None else limit
     per_article_limit = config["news_body_max_chars"]
     remaining_body_chars = config["news_body_total_max_chars"]
     output = [f"## {ticker} News, from {start_date} to {end_date}:"]
-    for article in articles[: config["news_article_limit"]]:
+    for article in articles[:limit]:
         source = article.get("publisher") or "Unknown"
         vendor = article.get("vendor") or "Unknown"
         output.append(f"\n### {article['title']} (source: {source}; vendor: {vendor})")
@@ -105,6 +113,42 @@ def get_news(ticker: str, start_date: str, end_date: str) -> str:
     unique = _deduplicate(articles)
     if unique:
         return _format_articles(ticker, start_date, end_date, unique)
+    if errors:
+        raise VendorUnavailableError("; ".join(errors))
+    return f"No news found for {ticker} between {start_date} and {end_date}"
+
+
+def get_news_merged(ticker: str, start_date: str, end_date: str) -> str:
+    """Alpaca and Yahoo news as in ``get_news``, plus OpenBB's articles added after them.
+
+    The feeds barely overlap (OpenBB's Nasdaq feed carries Motley Fool, Zacks and Barchart;
+    Alpaca carries Benzinga and fiscal.ai), so OpenBB adds coverage. It is a supplement capped at
+    ``news_supplement_article_limit`` and listed last, so it never displaces the Alpaca and Yahoo
+    articles. Any one feed failing leaves the others; only all failing is an error.
+    """
+
+    config = get_config()
+    articles: list[dict] = []
+    errors: list[str] = []
+    for vendor, fetcher in (
+        ("Alpaca", fetch_alpaca),
+        ("Yahoo Finance", fetch_yahoo),
+        ("OpenBB", fetch_openbb),
+    ):
+        try:
+            articles.extend(fetcher(ticker, start_date, end_date))
+        except VendorError as exc:
+            errors.append(f"{vendor}: {exc}")
+
+    unique = _deduplicate(articles)
+    main = [item for item in unique if item.get("vendor") != "OpenBB"]
+    supplement = [item for item in unique if item.get("vendor") == "OpenBB"]
+    main = main[: config["news_article_limit"]]
+    supplement = supplement[: config["news_supplement_article_limit"]]
+    if main or supplement:
+        return _format_articles(
+            ticker, start_date, end_date, main + supplement, len(main) + len(supplement)
+        )
     if errors:
         raise VendorUnavailableError("; ".join(errors))
     return f"No news found for {ticker} between {start_date} and {end_date}"
