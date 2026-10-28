@@ -297,7 +297,11 @@ def test_batch_endpoints_require_authentication_and_report_unknown_batches(clien
 @pytest.mark.unit
 def test_activity_requires_authentication_and_counts_queued_work(client):
     assert client.get("/v1/activity").status_code == 401
-    assert client.get("/v1/activity", headers=AUTH).json() == {"busy": False, "jobs": 0}
+    assert client.get("/v1/activity", headers=AUTH).json() == {
+        "busy": False,
+        "jobs": 0,
+        "completions": 0,
+    }
 
     client.post(
         "/v1/jobs",
@@ -305,4 +309,8 @@ def test_activity_requires_authentication_and_counts_queued_work(client):
         json={"ticker": "AAPL", "trade_date": "2026-10-15", "analysts": ["market"]},
     )
 
-    assert client.get("/v1/activity", headers=AUTH).json() == {"busy": True, "jobs": 1}
+    assert client.get("/v1/activity", headers=AUTH).json() == {
+        "busy": True,
+        "jobs": 1,
+        "completions": 0,
+    }
