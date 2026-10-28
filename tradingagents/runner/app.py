@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.symbols import safe_ticker_component
+from tradingagents.runner.complete import Completer, CompleteRequest
 from tradingagents.runner.executor import execute_job
 from tradingagents.runner.store import JobStore
 
@@ -113,6 +114,7 @@ def create_app(
     store: JobStore | None = None,
     token: str | None = None,
     results_root: Path | None = None,
+    completer: Completer | None = None,
 ) -> FastAPI:
     data_root = Path(os.getenv("TRADINGAGENTS_RUNNER_DATA_DIR", "~/.tradingagents/runner")).expanduser()
     job_store = store or JobStore(data_root / "jobs.sqlite3")
@@ -122,6 +124,7 @@ def create_app(
 
     app = FastAPI(title="TradingAgents private runner", docs_url=None, redoc_url=None)
     app.state.store = job_store
+    completer = completer or Completer()
 
     def authorize(authorization: str = Header(default="")) -> None:
         scheme, _, supplied = authorization.partition(" ")
@@ -203,9 +206,18 @@ def create_app(
 
     @app.get("/v1/activity", dependencies=[Depends(authorize)])
     def activity() -> dict:
-        """Whether any analysis is queued or running; the ai-node sleeps only when none is."""
+        """Whether any analysis is queued or running, or a model call is under way.
+
+        The ai-node sleeps only when none is.
+        """
         busy = job_store.count_busy()
-        return {"busy": busy > 0, "jobs": busy}
+        completions = completer.inflight
+        return {"busy": busy > 0 or completions > 0, "jobs": busy, "completions": completions}
+
+    @app.post("/v1/complete", dependencies=[Depends(authorize)])
+    def complete(body: CompleteRequest) -> dict:
+        """One bounded call to the runner's own model, for production's services (no internet)."""
+        return completer.run(body)
 
     @app.get("/v1/jobs", dependencies=[Depends(authorize)])
     def list_active_jobs() -> dict:

@@ -111,3 +111,12 @@ barely overlap (OpenBB: Motley Fool, Zacks, Barchart; Alpaca: Benzinga, fiscal.a
 adds coverage and never displaces the others. Any one feed failing leaves the rest. The OpenBB
 gateway cuts its newest 50 articles to the window, so for an older date of a heavily covered
 stock it may add none. Set `data_vendors.news_data` to `alpaca_yahoo,yfinance` to leave OpenBB out.
+
+## Model calls for production's services
+
+The runner also offers `POST /v1/complete` (same bearer token): one bounded call to the runner's own
+local model, for services that run on production (the news radar). The caller sends `system` and
+`user` text (40,000 characters at most, together), and optionally `json_output`, `think` and
+`max_tokens` (4,000 at most); it cannot choose the model. The ai-node fetches nothing for it:
+production fetches the news and sends the text. At most 2 calls run at once (a third gets 429), and
+`GET /v1/activity` reports them as `completions`, so the node does not sleep in the middle of one.
