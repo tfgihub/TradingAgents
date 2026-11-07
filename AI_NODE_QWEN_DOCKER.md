@@ -120,3 +120,25 @@ local model, for services that run on production (the news radar). The caller se
 `max_tokens` (4,000 at most); it cannot choose the model. The ai-node fetches nothing for it:
 production fetches the news and sends the text. At most 2 calls run at once (a third gets 429), and
 `GET /v1/activity` reports them as `completions`, so the node does not sleep in the middle of one.
+
+## A second lane for the nightly batch (optional, off by default)
+
+The runner runs one analysis at a time. `TRADINGAGENTS_RUNNER_EXTRA_LANES=mac=http://100.x.y.z:11434/v1`
+(`name=url`, comma-separated for several) adds a worker for each extra lane: another machine's Ollama
+that serves only the model calls. Everything else stays on the ai-node (the graph, the data through
+production's gateways, the job store and the reports), so production sees one runner that finishes a
+batch sooner. Without the setting nothing changes.
+
+- **What a lane takes.** Only jobs nobody has tried, and never one of the last 4 queued (the lane is
+  slower, so the end of a batch is finished sooner by the main lane). It checks that its Ollama answers
+  (`GET /api/tags`, 3 s) before each job, and waits a minute and asks again while it does not.
+- **When the lane fails.** If the lane's Ollama cannot be reached or drops in the middle of a job
+  (connection errors and timeouts), the job goes back to the queue and the main lane runs it from the
+  start (`job.requeued` event). Any other failure is an ordinary failure of that analysis.
+- **Same model, same context.** The lane uses the model names the runner is configured with, so the
+  lane's Ollama needs those exact models and the same `OLLAMA_CONTEXT_LENGTH` (32768), flash attention
+  and KV cache type, or long prompts are cut differently. `deploy/ai-node-mac-lane/` in the
+  trading-system repo has the setup and the check for a Mac.
+- **Traceability.** A job's result says which lane ran it (`lane`: `main` or the lane's name), and
+  `job.started` carries it, so ratings can be compared by lane.
+- `GET /health/ready` reports `max_concurrent_jobs` (1 plus the lanes) and the lanes.

@@ -118,13 +118,30 @@ class JobStore:
             row = connection.execute("SELECT 1 FROM jobs WHERE status = 'queued' LIMIT 1").fetchone()
         return row is not None
 
-    def claim_next_queued(self) -> dict | None:
-        """Atomically move the oldest queued job to running and return it."""
+    def count_queued(self) -> int:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT count(*) FROM jobs WHERE status = 'queued'"
+            ).fetchone()[0]
+
+    def claim_next_queued(self, *, fresh_only: bool = False, keep: int = 0) -> dict | None:
+        """Atomically move the oldest queued job to running and return it.
+
+        ``fresh_only`` skips a job that has been tried before (a job a slower lane gave back).
+        ``keep`` leaves the last ``keep`` queued jobs alone: a slow lane must not take the tail of
+        a batch that the fast lane would finish sooner.
+        """
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            queued = connection.execute(
+                "SELECT count(*) FROM jobs WHERE status = 'queued'"
+            ).fetchone()[0]
+            if keep and queued <= keep:
+                return None
             row = connection.execute(
-                """
+                f"""
                 SELECT id FROM jobs WHERE status = 'queued'
+                {"AND attempts = 0" if fresh_only else ""}
                 ORDER BY (mode = 'backtest'), created_at, rowid LIMIT 1
                 """
             ).fetchone()
@@ -135,6 +152,16 @@ class JobStore:
                 (_now(), row["id"]),
             )
         return self.get_job(row["id"])
+
+    def give_back(self, job_id: str) -> bool:
+        """Return a running job to the queue, to be tried again by the main lane."""
+        with self._connect() as connection:
+            moved = connection.execute(
+                "UPDATE jobs SET status = 'queued', attempts = attempts + 1, updated_at = ? "
+                "WHERE id = ? AND status = 'running'",
+                (_now(), job_id),
+            ).rowcount
+        return bool(moved)
 
     def cancel_queued(self, job_id: str) -> bool:
         """Fail a job that has not started; a running job cannot be interrupted."""
