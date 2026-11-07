@@ -1,22 +1,25 @@
-"""Authenticated, single-concurrency TradingAgents runner API."""
+"""Authenticated TradingAgents runner API: one job at a time on the main lane, and optionally one
+more on each extra lane (another Ollama that only runs the job's model calls)."""
 
 from __future__ import annotations
 
 import hmac
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.runner.complete import Completer, CompleteRequest
-from tradingagents.runner.executor import execute_job
+from tradingagents.runner.executor import Lane, execute_job
 from tradingagents.runner.store import JobStore
 
 _ANALYSTS = frozenset({"market", "social", "news", "fundamentals"})
@@ -24,6 +27,11 @@ MAX_ACTIVE_JOBS = 200
 MAX_BATCH_JOBS = 2000
 MAX_BATCH_TICKERS = 120
 MAX_BATCH_DATES = 90
+# An extra lane never takes one of the last few queued jobs: it is slower than the main lane, so
+# the tail of a batch is finished sooner there.
+LANE_KEEP = 4
+LANE_PROBE_SECONDS = 3.0
+LANE_RETRY_SECONDS = 60.0
 
 
 class _StrictModel(BaseModel):
@@ -99,6 +107,31 @@ class CreateBatchRequest(_StrictModel):
         return value
 
 
+def parse_lanes(text: str) -> list[Lane]:
+    """``name=url,name=url`` (the OpenAI-compatible URLs of the extra lanes' Ollama servers)."""
+
+    lanes: list[Lane] = []
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        name, _, url = item.partition("=")
+        name, url = name.strip(), url.strip().rstrip("/")
+        if not name.isidentifier() or name == "main" or not url.startswith(("http://", "https://")):
+            raise RuntimeError(f"TRADINGAGENTS_RUNNER_EXTRA_LANES: bad lane {item!r}")
+        if any(lane.name == name for lane in lanes):
+            raise RuntimeError(f"TRADINGAGENTS_RUNNER_EXTRA_LANES: lane {name!r} twice")
+        lanes.append(Lane(name, url))
+    return lanes
+
+
+def lane_is_up(lane: Lane) -> bool:
+    """Whether the lane's Ollama answers (its model list is cheap and needs no model loaded)."""
+
+    root = lane.url.removesuffix("/v1")
+    try:
+        return httpx.get(f"{root}/api/tags", timeout=LANE_PROBE_SECONDS).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def _read_token() -> str:
     path = os.getenv("TRADINGAGENTS_RUNNER_TOKEN_FILE", "")
     if not path:
@@ -115,12 +148,17 @@ def create_app(
     token: str | None = None,
     results_root: Path | None = None,
     completer: Completer | None = None,
+    lanes: list[Lane] | None = None,
 ) -> FastAPI:
     data_root = Path(os.getenv("TRADINGAGENTS_RUNNER_DATA_DIR", "~/.tradingagents/runner")).expanduser()
     job_store = store or JobStore(data_root / "jobs.sqlite3")
     api_token = token or _read_token()
     reports = results_root or data_root / "reports"
     execution_lock = threading.Lock()
+    extra_lanes = (
+        parse_lanes(os.getenv("TRADINGAGENTS_RUNNER_EXTRA_LANES", "")) if lanes is None else lanes
+    )
+    lane_locks = {lane.name: threading.Lock() for lane in extra_lanes}
 
     app = FastAPI(title="TradingAgents private runner", docs_url=None, redoc_url=None)
     app.state.store = job_store
@@ -147,8 +185,38 @@ def create_app(
             if not job_store.has_queued():
                 return
 
+    def drain_lane(lane: Lane) -> None:
+        """Run jobs on an extra lane while it is up and the queue is long enough to share."""
+        lock = lane_locks[lane.name]
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            while job_store.count_queued() > LANE_KEEP:
+                if not lane_is_up(lane):
+                    time.sleep(LANE_RETRY_SECONDS)
+                    continue
+                job = job_store.claim_next_queued(fresh_only=True, keep=LANE_KEEP)
+                if job is None:
+                    return
+                execute_job(job_store, job["id"], reports, lane)
+                if job_store.has_queued():
+                    # a job given back must not wait for a main lane that has already stopped
+                    threading.Thread(target=drain_queue, name="runner-queue", daemon=True).start()
+        finally:
+            lock.release()
+
+    def start_lanes() -> None:
+        for lane in extra_lanes:
+            threading.Thread(
+                target=drain_lane, args=(lane,), name=f"runner-lane-{lane.name}", daemon=True
+            ).start()
+
+    def drain_all() -> None:
+        start_lanes()
+        drain_queue()
+
     if job_store.has_queued():
-        threading.Thread(target=drain_queue, name="runner-queue", daemon=True).start()
+        threading.Thread(target=drain_all, name="runner-queue", daemon=True).start()
 
     @app.get("/health/live")
     def health_live() -> dict:
@@ -156,14 +224,18 @@ def create_app(
 
     @app.get("/health/ready")
     def health_ready() -> dict:
-        return {"status": "ready", "max_concurrent_jobs": 1}
+        return {
+            "status": "ready",
+            "max_concurrent_jobs": 1 + len(extra_lanes),
+            "lanes": ["main", *(lane.name for lane in extra_lanes)],
+        }
 
     @app.post("/v1/jobs", status_code=202, dependencies=[Depends(authorize)])
     def create_job(body: CreateJobRequest, background: BackgroundTasks) -> dict:
         if job_store.count_active() >= MAX_ACTIVE_JOBS:
             raise HTTPException(status_code=429, detail="the analysis queue is full")
         job = job_store.create_job(body.ticker, body.trade_date, body.analysts, body.mode)
-        background.add_task(drain_queue)
+        background.add_task(drain_all)
         return job
 
     @app.post("/v1/batches", status_code=202, dependencies=[Depends(authorize)])
@@ -178,7 +250,7 @@ def create_app(
         batch = job_store.create_batch(
             str(body.batch_id), body.tickers, body.trade_dates, body.analysts
         )
-        background.add_task(drain_queue)
+        background.add_task(drain_all)
         return batch
 
     @app.get("/v1/batches/{batch_id}", dependencies=[Depends(authorize)])

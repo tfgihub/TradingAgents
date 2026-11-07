@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 from tradingagents.agents.rating import run_rating
@@ -22,21 +23,57 @@ _REPORT_FIELDS = (
 )
 
 
+@dataclass(frozen=True)
+class Lane:
+    """An extra place to run a job's model calls: the same graph, another Ollama."""
+
+    name: str
+    url: str  # the OpenAI-compatible base URL, e.g. http://100.92.169.45:11434/v1
+
+
+# Why a call to a lane's model server failed, not why an analysis did: the job is given back.
+_LINK_ERRORS = frozenset(
+    {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "RemoteProtocolError",
+        "ReadError",
+        "ReadTimeout",
+    }
+)
+
+
+def link_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` (or what caused it) is the model server being unreachable or dropping."""
+
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if any(cls.__name__ in _LINK_ERRORS for cls in type(exc).__mro__):
+            return True
+        exc = exc.__cause__ or exc.__context__  # type: ignore[assignment]
+    return False
+
+
 def _emit(store: JobStore, job_id: str, events: list) -> None:
     for event_type, payload in events:
         store.add_event(job_id, event_type, payload)
 
 
-def execute_job(store: JobStore, job_id: str, results_root: Path) -> None:
+def execute_job(store: JobStore, job_id: str, results_root: Path, lane: Lane | None = None) -> None:
     job = store.get_job(job_id)
     if job is None:
         return
     store.set_status(job_id, "running")
-    store.add_event(job_id, "job.started", {})
+    store.add_event(job_id, "job.started", {"lane": lane.name} if lane else {})
     tracker: ProgressTracker | None = None
     try:
         config = deepcopy(DEFAULT_CONFIG)
         config["checkpoint_enabled"] = False
+        if lane is not None:
+            config["backend_url"] = lane.url
         if job.get("mode") == "backtest":
             # A historical replay must not learn from, or write into, the live decision memory.
             memory_path = results_root / job_id / "memory" / "trading_memory.md"
@@ -68,6 +105,7 @@ def execute_job(store: JobStore, job_id: str, results_root: Path) -> None:
             "ticker": job["ticker"],
             "trade_date": job["trade_date"],
             "rating": run_rating(final_state),
+            "lane": lane.name if lane else "main",
             "report_path": str(report_path),
             "reports": {field: final_state.get(field, "") for field in _REPORT_FIELDS},
             "sections": build_sections(final_state),
@@ -80,6 +118,13 @@ def execute_job(store: JobStore, job_id: str, results_root: Path) -> None:
             {"rating": result["rating"]},
         )
     except Exception as exc:
+        if lane is not None and link_failure(exc) and store.give_back(job_id):
+            store.add_event(
+                job_id,
+                "job.requeued",
+                {"lane": lane.name, "why": f"{type(exc).__name__}: {exc}"[:300]},
+            )
+            return
         message = f"{type(exc).__name__}: {exc}"
         if tracker is not None:
             _emit(store, job_id, tracker.fail())
