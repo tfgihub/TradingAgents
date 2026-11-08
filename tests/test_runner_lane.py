@@ -14,7 +14,7 @@ from tradingagents.runner.store import JobStore
 
 TOKEN = "x" * 32
 AUTH = {"Authorization": "Bearer " + TOKEN}
-MAC = Lane("mac", "http://100.92.169.45:11434/v1")
+MAC = Lane("mac", "http://100.64.0.2:11434/v1")
 
 
 def queue(store, count, batch="b1"):
@@ -150,9 +150,9 @@ def test_the_main_lane_never_hands_a_job_back_and_keeps_the_configured_model_ser
 def test_lanes_are_read_from_one_setting_and_bad_ones_are_refused():
     assert runner_app.parse_lanes("") == []
     assert runner_app.parse_lanes(
-        "mac=http://100.92.169.45:11434/v1/, spare=https://x.example/v1"
+        "mac=http://100.64.0.2:11434/v1/, spare=https://x.example/v1"
     ) == [
-        Lane("mac", "http://100.92.169.45:11434/v1"),
+        Lane("mac", "http://100.64.0.2:11434/v1"),
         Lane("spare", "https://x.example/v1"),
     ]
     for bad in (
@@ -176,7 +176,7 @@ def test_a_lane_is_up_when_its_ollama_lists_models(monkeypatch):
 
     monkeypatch.setattr(runner_app.httpx, "get", fake_get)
     assert runner_app.lane_is_up(MAC) is True
-    assert seen == [("http://100.92.169.45:11434/api/tags", runner_app.LANE_PROBE_SECONDS)]
+    assert seen == [("http://100.64.0.2:11434/api/tags", runner_app.LANE_PROBE_SECONDS)]
 
     monkeypatch.setattr(runner_app.httpx, "get", lambda url, timeout: httpx.Response(500))
     assert runner_app.lane_is_up(MAC) is False
