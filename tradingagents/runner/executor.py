@@ -28,7 +28,7 @@ class Lane:
     """An extra place to run a job's model calls: the same graph, another Ollama."""
 
     name: str
-    url: str  # the OpenAI-compatible base URL, e.g. http://100.92.169.45:11434/v1
+    url: str  # the OpenAI-compatible base URL, e.g. http://100.64.0.2:11434/v1
 
 
 # Why a call to a lane's model server failed, not why an analysis did: the job is given back.
