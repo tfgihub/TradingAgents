@@ -27,6 +27,7 @@ class JobStore:
                     id TEXT PRIMARY KEY,
                     ticker TEXT NOT NULL,
                     trade_date TEXT NOT NULL,
+                    information_date TEXT,
                     analysts_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -67,6 +68,8 @@ class JobStore:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
             if "mode" not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'")
+            if "information_date" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN information_date TEXT")
             if "batch_id" not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN batch_id TEXT")
                 connection.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
@@ -309,7 +312,13 @@ class JobStore:
         return [dict(row) for row in rows]
 
     def create_job(
-        self, ticker: str, trade_date: str, analysts: tuple[str, ...], mode: str = "live"
+        self,
+        ticker: str,
+        trade_date: str,
+        analysts: tuple[str, ...],
+        mode: str = "live",
+        *,
+        information_date: str | None = None,
     ) -> dict:
         job_id = str(uuid4())
         timestamp = _now()
@@ -317,12 +326,30 @@ class JobStore:
             connection.execute(
                 """
                 INSERT INTO jobs (
-                    id, ticker, trade_date, analysts_json, status, created_at, updated_at, mode
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+                    id, ticker, trade_date, information_date, analysts_json, status,
+                    created_at, updated_at, mode
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)
                 """,
-                (job_id, ticker, trade_date, json.dumps(analysts), timestamp, timestamp, mode),
+                (
+                    job_id,
+                    ticker,
+                    trade_date,
+                    information_date,
+                    json.dumps(analysts),
+                    timestamp,
+                    timestamp,
+                    mode,
+                ),
             )
-        self.add_event(job_id, "job.queued", {"ticker": ticker, "trade_date": trade_date})
+        self.add_event(
+            job_id,
+            "job.queued",
+            {
+                "ticker": ticker,
+                "trade_date": trade_date,
+                "information_date": information_date or trade_date,
+            },
+        )
         return self.get_job(job_id)
 
     def get_job(self, job_id: str) -> dict | None:

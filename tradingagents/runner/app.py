@@ -14,7 +14,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.symbols import safe_ticker_component
@@ -41,6 +41,7 @@ class _StrictModel(BaseModel):
 class CreateJobRequest(_StrictModel):
     ticker: str = Field(min_length=1, max_length=24)
     trade_date: str
+    information_date: str | None = None
     analysts: tuple[str, ...] = ("market", "social", "news", "fundamentals")
     mode: Literal["live", "backtest"] = "live"
 
@@ -61,6 +62,19 @@ class CreateJobRequest(_StrictModel):
         if not valid or value > get_current_date():
             raise ValueError("trade_date must be YYYY-MM-DD and cannot be in the future")
         return value
+
+    @field_validator("information_date")
+    @classmethod
+    def validate_information_date(cls, value: str | None) -> str | None:
+        return None if value is None else _valid_date(value)
+
+    @model_validator(mode="after")
+    def validate_date_order(self) -> CreateJobRequest:
+        if self.information_date is not None and self.information_date < self.trade_date:
+            raise ValueError("information_date cannot be before trade_date")
+        if self.mode == "backtest" and self.information_date not in {None, self.trade_date}:
+            raise ValueError("backtest information_date must equal trade_date")
+        return self
 
     @field_validator("analysts")
     @classmethod
@@ -234,7 +248,13 @@ def create_app(
     def create_job(body: CreateJobRequest, background: BackgroundTasks) -> dict:
         if job_store.count_active() >= MAX_ACTIVE_JOBS:
             raise HTTPException(status_code=429, detail="the analysis queue is full")
-        job = job_store.create_job(body.ticker, body.trade_date, body.analysts, body.mode)
+        job = job_store.create_job(
+            body.ticker,
+            body.trade_date,
+            body.analysts,
+            body.mode,
+            information_date=body.information_date,
+        )
         background.add_task(drain_all)
         return job
 

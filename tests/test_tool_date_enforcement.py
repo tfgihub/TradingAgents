@@ -1,9 +1,9 @@
-"""Dated tools take the analysis date from graph state, not from the model.
+"""Dated tools take their applicable cutoff from graph state, not from the model.
 
 Every point-in-time guard behind a tool trusts the date it is given. A model that
-omits the date, or passes today's instead of the analysis date, would otherwise
-walk past them. The run's trade_date is injected from state and hidden from the
-model-visible schema.
+omits the date, or passes today's instead of the run cutoff, would otherwise walk
+past them. Market data uses ``trade_date``; news research uses
+``information_date``. Both are injected from state and hidden from the model.
 """
 
 from __future__ import annotations
@@ -65,7 +65,9 @@ DATED_TOOLS = [
 @pytest.mark.unit
 @pytest.mark.parametrize("tool", DATED_TOOLS, ids=lambda t: t.name)
 def test_trade_date_is_hidden_from_the_model(tool):
-    assert "trade_date" not in tool.tool_call_schema.model_json_schema()["properties"]
+    properties = tool.tool_call_schema.model_json_schema()["properties"]
+    assert "trade_date" not in properties
+    assert "information_date" not in properties
 
 
 INSTRUMENT_TOOLS = [
@@ -92,10 +94,11 @@ def test_a_tool_serves_the_run_instrument_whatever_the_model_passes():
 
 class _State(MessagesState):
     trade_date: str
+    information_date: str
     company_of_interest: str
 
 
-def _run(tool, args, module):
+def _run(tool, args, module, *, information_date=TRADE_DATE):
     """Call the tool through a ToolNode in a graph carrying the run's trade_date."""
     graph = StateGraph(_State)
     graph.add_node("tools", ToolNode([tool]))
@@ -105,6 +108,7 @@ def _run(tool, args, module):
         graph.compile().invoke({
             "messages": [AIMessage("", tool_calls=[{"name": tool.name, "args": args, "id": "1"}])],
             "trade_date": TRADE_DATE,
+            "information_date": information_date,
             "company_of_interest": "NVDA",
         })
     return routed.call_args.args
@@ -129,6 +133,26 @@ def test_future_window_from_the_model_is_clamped():
 
 
 @pytest.mark.unit
+def test_weekend_news_uses_information_date_while_market_data_stays_on_trade_date():
+    information_date = "2026-08-16"
+    news_args = _run(
+        tools.get_news,
+        {"start_date": "2026-08-10", "end_date": information_date},
+        tools,
+        information_date=information_date,
+    )
+    market_args = _run(
+        tools.get_stock_data,
+        {"start_date": "2026-08-01", "end_date": information_date},
+        tools,
+        information_date=information_date,
+    )
+
+    assert news_args == ("get_news", "NVDA", "2026-08-10", information_date)
+    assert market_args == ("get_stock_data", "NVDA", "2026-08-01", TRADE_DATE)
+
+
+@pytest.mark.unit
 def test_direct_call_without_state_is_unchanged():
     with mock.patch.object(tools, "route_to_vendor", return_value="ok") as routed:
         tools.get_news.func("AAPL", "2026-09-01", "2026-09-08")
@@ -141,7 +165,14 @@ def test_a_start_date_that_is_not_a_date_is_sent_back_to_the_model(tool):
     # A model can append a stray character to a date (#1476). No window can be
     # guessed from it, so the vendor is not called and the model is told the form.
     with mock.patch.object(tools, "route_to_vendor", return_value="ok") as routed:
-        out = getattr(tools, tool).func("NVDA", "2026-09-26\u0629", "2026-10-03", trade_date="2026-10-03")
+        cutoff = (
+            {"information_date": "2026-10-03"}
+            if tool == "get_news"
+            else {"trade_date": "2026-10-03"}
+        )
+        out = getattr(tools, tool).func(
+            "NVDA", "2026-09-26\u0629", "2026-10-03", **cutoff
+        )
     assert not routed.called
     assert "YYYY-MM-DD" in out and "start_date" in out
 

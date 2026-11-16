@@ -143,6 +143,40 @@ def test_the_main_lane_never_hands_a_job_back_and_keeps_the_configured_model_ser
     assert seen["backend_url"] != MAC.url
 
 
+@pytest.mark.unit
+def test_executor_passes_the_information_date_into_graph_state(tmp_path, monkeypatch):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(
+        "AAPL",
+        "2026-10-16",
+        ("news",),
+        information_date="2026-10-18",
+    )
+    seen = {}
+
+    class Graph:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def create_run_state(self, ticker, trade_date, *, information_date):
+            seen.update(
+                ticker=ticker,
+                trade_date=trade_date,
+                information_date=information_date,
+            )
+            raise RuntimeError("stop after capturing state")
+
+    monkeypatch.setattr(executor, "TradingAgentsGraph", Graph)
+
+    execute_job(store, job["id"], tmp_path / "reports")
+
+    assert seen == {
+        "ticker": "AAPL",
+        "trade_date": "2026-10-16",
+        "information_date": "2026-10-18",
+    }
+
+
 # ------------------------------------------------------------------------------- the app
 
 

@@ -1,7 +1,8 @@
 """The data tools the analysts call.
 
-Each dated tool takes the run's ``trade_date`` from graph state (``InjectedState``)
-and never serves data past it, whatever date the model asks for.
+Market tools take the run's ``trade_date`` from graph state. News-research tools
+take ``information_date``, which may be later for a live weekend run. Neither
+date is model-controlled, and no tool serves data past its applicable cutoff.
 """
 
 from typing import Annotated
@@ -174,6 +175,7 @@ def get_news(
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    information_date: Annotated[str, InjectedState("information_date")] = "",
 ) -> str:
     """
     Retrieve news data for the instrument under analysis.
@@ -185,7 +187,9 @@ def get_news(
         str: A formatted string containing news data
     """
     try:
-        start_date, end_date = as_of_window(start_date, end_date, trade_date)
+        start_date, end_date = as_of_window(
+            start_date, end_date, information_date or trade_date
+        )
     except ValueError as e:
         return str(e)
     return route_to_vendor("get_news", ticker, start_date, end_date)
@@ -197,6 +201,7 @@ def get_global_news(
     look_back_days: Annotated[int | None, "Days to look back; omit to use the configured default"] = None,
     limit: Annotated[int | None, "Max articles to return; omit to use the configured default"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    information_date: Annotated[str, InjectedState("information_date")] = "",
 ) -> str:
     """
     Retrieve global news data.
@@ -212,7 +217,12 @@ def get_global_news(
     Returns:
         str: A formatted string containing global news data
     """
-    return route_to_vendor("get_global_news", as_of(curr_date, trade_date), look_back_days, limit)
+    return route_to_vendor(
+        "get_global_news",
+        as_of(curr_date, information_date or trade_date),
+        look_back_days,
+        limit,
+    )
 
 
 @tool
@@ -244,6 +254,7 @@ def get_macro_indicators(
         int | None, "Trailing window length in days; omit for a 1-year window"
     ] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    information_date: Annotated[str, InjectedState("information_date")] = "",
 ) -> str:
     """
     Retrieve a macroeconomic indicator time series from FRED (Federal Reserve
@@ -261,7 +272,12 @@ def get_macro_indicators(
     Returns:
         str: A formatted markdown report of the macro series
     """
-    return route_to_vendor("get_macro_indicators", indicator, as_of(curr_date, trade_date), look_back_days)
+    return route_to_vendor(
+        "get_macro_indicators",
+        indicator,
+        as_of(curr_date, information_date or trade_date),
+        look_back_days,
+    )
 
 
 @tool
@@ -273,6 +289,7 @@ def get_prediction_markets(
     ],
     limit: Annotated[int | None, "Max markets to return; omit for a default of 6"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    information_date: Annotated[str, InjectedState("information_date")] = "",
 ) -> str:
     """
     Retrieve live, market-implied probabilities for forward-looking events from
@@ -288,4 +305,6 @@ def get_prediction_markets(
     Returns:
         str: A formatted markdown report of matching prediction markets
     """
-    return route_to_vendor("get_prediction_markets", topic, limit, trade_date or None)
+    return route_to_vendor(
+        "get_prediction_markets", topic, limit, information_date or trade_date or None
+    )

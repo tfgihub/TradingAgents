@@ -20,7 +20,7 @@ TOOLS = (
 
 def create_news_analyst(llm):
     def news_analyst_node(state):
-        current_date = state["trade_date"]
+        current_date = state.get("information_date") or state["trade_date"]
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
