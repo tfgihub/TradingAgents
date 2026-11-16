@@ -80,7 +80,12 @@ def execute_job(store: JobStore, job_id: str, results_root: Path, lane: Lane | N
             memory_path.parent.mkdir(parents=True, exist_ok=True)
             config["memory_log_path"] = str(memory_path)
         graph = TradingAgentsGraph(job["analysts"], config=config, debug=False)
-        initial_state = graph.create_run_state(job["ticker"], job["trade_date"])
+        information_date = job.get("information_date") or job["trade_date"]
+        initial_state = graph.create_run_state(
+            job["ticker"],
+            job["trade_date"],
+            information_date=information_date,
+        )
         args = graph.propagator.get_graph_args()
         final_state: dict = {}
         tracker = ProgressTracker(job["analysts"])
@@ -104,6 +109,7 @@ def execute_job(store: JobStore, job_id: str, results_root: Path, lane: Lane | N
         result = {
             "ticker": job["ticker"],
             "trade_date": job["trade_date"],
+            "information_date": information_date,
             "rating": run_rating(final_state),
             "lane": lane.name if lane else "main",
             "report_path": str(report_path),

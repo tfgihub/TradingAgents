@@ -44,6 +44,27 @@ def test_runner_creates_job_and_exposes_progress(client):
 
 
 @pytest.mark.unit
+def test_runner_keeps_weekend_information_date_separate_from_market_date(client):
+    response = client.post(
+        "/v1/jobs",
+        headers=AUTH,
+        json={
+            "ticker": "AAPL",
+            "trade_date": "2026-10-16",
+            "information_date": "2026-10-18",
+            "analysts": ["market", "news"],
+        },
+    )
+
+    assert response.status_code == 202
+    job = response.json()
+    assert job["trade_date"] == "2026-10-16"
+    assert job["information_date"] == "2026-10-18"
+    event = client.get(f"/v1/jobs/{job['id']}/events", headers=AUTH).json()["events"][0]
+    assert event["payload"]["information_date"] == "2026-10-18"
+
+
+@pytest.mark.unit
 def test_runner_queues_additional_jobs_in_order(tmp_path, monkeypatch):
     order = []
     monkeypatch.setattr(
@@ -108,6 +129,22 @@ def test_runner_rejects_jobs_when_queue_is_full(client, monkeypatch):
         {"ticker": "../AAPL", "trade_date": "2026-10-15"},
         {"ticker": "AAPL", "trade_date": "2999-01-01"},
         {"ticker": "AAPL", "trade_date": "not-a-date"},
+        {
+            "ticker": "AAPL",
+            "trade_date": "2026-10-15",
+            "information_date": "2026-10-14",
+        },
+        {
+            "ticker": "AAPL",
+            "trade_date": "2026-10-15",
+            "information_date": "2999-01-01",
+        },
+        {
+            "ticker": "AAPL",
+            "trade_date": "2026-10-15",
+            "information_date": "2026-10-16",
+            "mode": "backtest",
+        },
         {"ticker": "AAPL", "trade_date": "2026-10-15", "analysts": []},
     ],
 )
@@ -166,6 +203,7 @@ def test_store_adds_mode_to_a_database_created_before_backtests(tmp_path):
     store = JobStore(path)
 
     assert store.get_job("old")["mode"] == "live"
+    assert store.get_job("old")["information_date"] is None
     assert store.create_job("MSFT", "2026-10-02", ("news",), mode="backtest")["mode"] == "backtest"
 
 
